@@ -360,7 +360,7 @@ class ArgoCDMonitor {
     }
 
     // Mostrar resumen final
-    this.showSummary(summary);
+    await this.showSummary(summary);
   }
 
   async sendSlackNotification(message, blocks = null) {
