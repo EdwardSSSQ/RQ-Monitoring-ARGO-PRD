@@ -369,8 +369,8 @@ class ArgoCDMonitor {
           await this.sendPodDeathAlert(result.appName, result.deadPodsList, result.total);
         }
         
-        // Alertas por estados de ArgoCD
-        if (result.hasProblems) {
+        // Alertas por estados de ArgoCD (solo críticas, OutOfSync solo si hay otros problemas)
+        if (result.hasCriticalProblems || result.isOutOfSyncCritical) {
           await this.sendArgoCDStatusAlert(result);
         }
       }
@@ -506,7 +506,7 @@ class ArgoCDMonitor {
           },
           {
             type: 'mrkdwn',
-            text: `*🟡 Apps OutOfSync:*\n${totalOutOfSync || 0}`
+            text: `*🟡 Apps OutOfSync (crítico):*\n${totalOutOfSync || 0}`
           }
         ]
       }
@@ -551,15 +551,15 @@ class ArgoCDMonitor {
         }
       }
 
-      // Problemas de estado ArgoCD
+      // Problemas de estado ArgoCD (solo críticos)
       if (appsWithArgoCDProblems.length > 0) {
         issuesText += appsWithArgoCDProblems.map(app => {
           const problems = [];
           if (app.isDegraded) problems.push('🔴 Degraded');
-          if (app.isOutOfSync) problems.push('🟡 OutOfSync');
+          if (app.isOutOfSyncCritical) problems.push('🟡 OutOfSync (crítico)'); // Solo si es crítico
           if (app.isMissing) problems.push('⚠️ Missing');
           if (app.isSuspended) problems.push('⏸️ Suspended');
-          return `🚨 *${app.appName}*\n   • Health: ${app.appHealth}\n   • Sync: ${app.syncStatus}\n   • Problemas: ${problems.join(', ')}`;
+          return `🚨 *${app.appName}*\n   • Health: ${app.appHealth}\n   • Sync: ${app.syncStatus}\n   • Problemas críticos: ${problems.join(', ')}`;
         }).join('\n\n');
       }
 
@@ -824,7 +824,14 @@ class ArgoCDMonitor {
     const isOutOfSync = syncStatus === 'OutOfSync';
     const isMissing = appHealth === 'Missing';
     const isSuspended = app.status?.operationState?.phase === 'Suspended' || appHealth === 'Suspended';
-    const hasProblems = isDegraded || isOutOfSync || isMissing || isSuspended;
+    
+    // OutOfSync solo es crítico si hay otros problemas (pods no listos, degraded, etc.)
+    // Si solo está OutOfSync pero todo está healthy, no se considera problema crítico (para evitar spam)
+    const hasCriticalProblems = isDegraded || isMissing || isSuspended || notReadyPods > 0;
+    const isOutOfSyncCritical = isOutOfSync && hasCriticalProblems;
+    
+    // hasProblems incluye OutOfSync solo si es crítico, las demás siempre son problemas
+    const hasProblems = hasCriticalProblems || isOutOfSyncCritical;
 
     return {
       appName,
@@ -836,9 +843,11 @@ class ArgoCDMonitor {
       syncStatus,
       isDegraded,
       isOutOfSync,
+      isOutOfSyncCritical,
       isMissing,
       isSuspended,
       hasProblems,
+      hasCriticalProblems,
       deadPods: deadPods.length,
       deadPodsList: deadPods
     };
@@ -947,7 +956,7 @@ class ArgoCDMonitor {
   }
 
   async sendArgoCDStatusAlert(result) {
-    if (!result.hasProblems) {
+    if (!result.hasCriticalProblems && !result.isOutOfSyncCritical) {
       return;
     }
 
@@ -955,8 +964,9 @@ class ArgoCDMonitor {
     if (result.isDegraded && SLACK_CONFIG.notifyOnAppDegraded) {
       issues.push('Degraded');
     }
-    if (result.isOutOfSync && SLACK_CONFIG.notifyOnAppOutOfSync) {
-      issues.push('OutOfSync');
+    // OutOfSync solo se incluye si es crítico (hay otros problemas)
+    if (result.isOutOfSyncCritical && SLACK_CONFIG.notifyOnAppOutOfSync) {
+      issues.push('OutOfSync (con problemas críticos)');
     }
     if (result.isMissing && SLACK_CONFIG.notifyOnAppMissing) {
       issues.push('Missing');
