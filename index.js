@@ -11,8 +11,8 @@ const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
 const SLACK_CONFIG = {
   notifyOnErrors: true,        // Notificar errores
   notifyOnUnreadyPods: true,   // Notificar cuando hay pods no listos
-  notifySummaryHourly: true,   // Enviar resumen cada hora (incluso si todo está bien)
-  notifySummaryAlways: false   // Enviar resumen en cada ejecución (puede ser demasiado)
+  notifySummaryHourly: false,  // Enviar resumen cada hora (deshabilitado)
+  notifySummaryAlways: true    // Enviar resumen en cada ejecución (cada minuto)
 };
 
 class ArgoCDMonitor {
@@ -335,12 +335,23 @@ class ArgoCDMonitor {
       return;
     }
 
-    console.log(`📦 Se encontraron ${applications.length} aplicación(es)\n`.cyan);
+    // Filtrar aplicaciones excluidas
+    const excludedApps = ['video-api-r36-prd'];
+    const filteredApplications = applications.filter(app => {
+      const appName = app.metadata?.name;
+      const shouldExclude = appName && excludedApps.includes(appName);
+      if (shouldExclude) {
+        console.log(`⏭️  Excluyendo aplicación: ${appName}`.gray);
+      }
+      return !shouldExclude;
+    });
+
+    console.log(`📦 Se encontraron ${applications.length} aplicación(es) (${filteredApplications.length} después de filtrar ${excludedApps.join(', ')})\n`.cyan);
     console.log('═'.repeat(80).gray);
 
     const summary = [];
 
-    for (const app of applications) {
+    for (const app of filteredApplications) {
       const result = await this.monitorApplication(app);
       if (result) {
         summary.push(result);
@@ -380,6 +391,10 @@ class ArgoCDMonitor {
     // Ordenar por nombre de aplicación
     summary.sort((a, b) => a.appName.localeCompare(b.appName));
 
+    // Separar aplicaciones con problemas y sin problemas
+    const appsWithIssues = summary.filter(item => item.notReady > 0);
+    const appsHealthy = summary.filter(item => item.notReady === 0);
+
     // Totales generales
     const totalPods = summary.reduce((sum, item) => sum + item.total, 0);
     const totalReady = summary.reduce((sum, item) => sum + item.ready, 0);
@@ -394,17 +409,36 @@ class ArgoCDMonitor {
       minute: '2-digit'
     });
 
-    // Determinar color y estado general
+    // Determinar estado general
     const hasIssues = totalNotReady > 0;
-    const color = hasIssues ? '#ff0000' : '#36a64f'; // Rojo si hay problemas, verde si todo bien
     const statusEmoji = hasIssues ? '⚠️' : '✅';
+    const statusText = hasIssues ? 'Con Problemas' : 'Todo OK';
 
     const blocks = [
       {
         type: 'header',
         text: {
           type: 'plain_text',
-          text: `${statusEmoji} Monitoreo ArgoCD - ${timestamp}`
+          text: `${statusEmoji} Monitoreo ArgoCD - ${statusText}`
+        }
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `📅 ${timestamp}`
+          }
+        ]
+      },
+      {
+        type: 'divider'
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*📊 RESUMEN GENERAL*'
         }
       },
       {
@@ -412,11 +446,11 @@ class ArgoCDMonitor {
         fields: [
           {
             type: 'mrkdwn',
-            text: `*Total Aplicaciones:*\n${summary.length}`
+            text: `*📦 Total Aplicaciones:*\n${summary.length}`
           },
           {
             type: 'mrkdwn',
-            text: `*Total Pods:*\n${totalPods}`
+            text: `*🎯 Total Pods:*\n${totalPods}`
           },
           {
             type: 'mrkdwn',
@@ -430,8 +464,7 @@ class ArgoCDMonitor {
       }
     ];
 
-    // Agregar aplicaciones con problemas
-    const appsWithIssues = summary.filter(item => item.notReady > 0);
+    // Si hay problemas, mostrar sección destacada
     if (appsWithIssues.length > 0) {
       blocks.push({
         type: 'divider'
@@ -440,28 +473,53 @@ class ArgoCDMonitor {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*⚠️ Aplicaciones con Pods No Listos:*\n${appsWithIssues.map(app => `• *${app.appName}*: ${app.notReady}/${app.total} pods no listos`).join('\n')}`
+          text: `*🚨 ALERTAS - Aplicaciones con Problemas*`
+        }
+      });
+      
+      // Agrupar aplicaciones con problemas, máximo 10 por bloque para evitar mensajes muy largos
+      const issuesText = appsWithIssues.map(app => {
+        const percentage = ((app.ready / app.total) * 100).toFixed(0);
+        return `⚠️ *${app.appName}*\n   • Listos: ${app.ready}/${app.total} (${percentage}%)\n   • No listos: ${app.notReady} pods`;
+      }).join('\n\n');
+
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: issuesText
         }
       });
     }
 
-    // Agregar todas las aplicaciones en un formato compacto
-    blocks.push({
-      type: 'divider'
-    });
-    
-    const appsText = summary.map(item => {
-      const icon = item.notReady > 0 ? '⚠️' : '✅';
-      return `${icon} *${item.appName}*: ${item.ready}/${item.total} listos${item.notReady > 0 ? ` (${item.notReady} no listos)` : ''}`;
-    }).join('\n');
+    // Mostrar aplicaciones saludables en una sección separada
+    if (appsHealthy.length > 0) {
+      blocks.push({
+        type: 'divider'
+      });
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*✅ Aplicaciones Saludables (${appsHealthy.length})*`
+        }
+      });
 
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Detalle por Aplicación:*\n${appsText}`
+      // Formatear aplicaciones saludables de forma compacta pero legible
+      const appsList = appsHealthy.map(item => `✅ *${item.appName}*: ${item.ready}/${item.total}`);
+      const chunkSize = 10; // Aplicaciones por bloque
+      
+      for (let i = 0; i < appsList.length; i += chunkSize) {
+        const chunk = appsList.slice(i, i + chunkSize);
+        blocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: chunk.join('\n')
+          }
+        });
       }
-    });
+    }
 
     return blocks;
   }
@@ -515,11 +573,11 @@ class ArgoCDMonitor {
       const totalNotReady = summary.reduce((sum, item) => sum + item.notReady, 0);
       
       // Enviar notificación según configuración
-      if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
-        // Enviar alerta inmediata si hay pods no listos
+      if (SLACK_CONFIG.notifySummaryAlways) {
+        // Enviar resumen en cada ejecución (cada minuto)
         this.sendSlackNotification(null, slackBlocks);
-      } else if (totalNotReady === 0 && SLACK_CONFIG.notifySummaryAlways) {
-        // Opcional: enviar resumen incluso cuando todo está bien
+      } else if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
+        // Enviar alerta inmediata si hay pods no listos
         this.sendSlackNotification(null, slackBlocks);
       }
     }
