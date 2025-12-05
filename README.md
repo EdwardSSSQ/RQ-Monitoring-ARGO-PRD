@@ -1,109 +1,61 @@
-# Monitoreo de ArgoCD - RQI
+# 🚀 Monitoreo de ArgoCD - RQI
 
-Aplicación Node.js para monitorear el estado de las aplicaciones y pods en ArgoCD.
+Monitoreo automático de aplicaciones y pods en ArgoCD con notificaciones a Slack.
 
-## Instalación
+## 🚀 Instalación
 
 ```bash
 npm install
 ```
 
-## Uso
+## ⚙️ Configuración
 
-### Modo Monitoreo Continuo (cada minuto)
+Copia `.env.example` a `.env` y configura las variables:
 
 ```bash
-npm start
+cp .env.example .env
 ```
 
-Este comando ejecutará el monitoreo inmediatamente y luego cada minuto automáticamente.
+Variables requeridas:
+- `SLACK_WEBHOOK_URL` - Webhook de Slack para notificaciones
 
-### Modo Ejecución Única
+Variables opcionales:
+- `ARGOCD_URL` - URL de ArgoCD (default: https://argocd.alproyect.store)
+- `ARGOCD_USERNAME` - Usuario de ArgoCD (default: admin)
+- `ARGOCD_PASSWORD` - Contraseña de ArgoCD
 
+## 🏃 Uso
+
+### Ejecución única:
 ```bash
 npm run once
 ```
 
-Ejecuta el monitoreo una sola vez y termina.
-
-## Opciones de Ejecución en Producción
-
-### Opción 1: Con node-cron (incluido)
-Simplemente ejecuta `npm start` y el proceso correrá continuamente ejecutándose cada minuto.
-
-**Pros:**
-- Simple y directo
-- No requiere software adicional
-
-**Contras:**
-- Si el proceso se cae, necesitas reiniciarlo manualmente
-- No tiene gestión automática de logs
-
-### Opción 2: Con PM2 (Recomendado para producción)
-
-1. Instalar PM2 globalmente:
+### Monitoreo continuo (cada minuto):
 ```bash
-npm install -g pm2
+npm start
 ```
 
-2. Crear directorio de logs:
-```bash
-mkdir -p logs
-```
+## 🔔 Notificaciones Slack
 
-3. Iniciar con PM2:
-```bash
-pm2 start ecosystem.config.js
-```
+El monitoreo envía notificaciones automáticamente cuando:
+- Hay pods no listos (inmediato)
+- Ocurren errores de autenticación o fatales
+- Resumen horario (si está habilitado)
 
-4. Ver logs en tiempo real:
-```bash
-pm2 logs rqi-monitoreo-argocd
-```
+## 📦 Desplegar en Railway
 
-5. Ver estado:
-```bash
-pm2 status
-```
+1. Sube el código a GitHub
+2. Ve a https://railway.app
+3. Crea nuevo proyecto → Deploy from GitHub repo
+4. Configura la variable `SLACK_WEBHOOK_URL` en Variables
+5. ¡Listo!
 
-6. Detener:
-```bash
-pm2 stop rqi-monitoreo-argocd
-```
+## 📊 Salida
 
-7. Configurar para iniciar al arrancar el sistema:
-```bash
-pm2 startup
-pm2 save
-```
-
-**Pros:**
-- Reinicio automático si falla
-- Gestión de logs automática
-- Inicio automático al reiniciar el servidor
-- Monitoreo de recursos (CPU, memoria)
-- Dashboard web disponible
-
-**Contras:**
-- Requiere instalar PM2
-
-### Opción 3: Con systemd (Linux) o launchd (macOS)
-
-Para servicios del sistema, puedes crear un servicio systemd o un LaunchAgent en macOS.
-
-## Configuración
-
-Las credenciales y URL están configuradas en `index.js`:
-- URL: https://argocd.alproyect.store
-- Usuario: admin
-- Contraseña: QTSK97LQXPeIekdt
-
-## Salida
-
-La aplicación mostrará:
-1. Detalle de cada aplicación con sus pods
-2. Resumen final con conteo de pods por ambiente
-3. Totales generales
-
-Cada ejecución muestra la fecha y hora para facilitar el seguimiento.
-
+El monitoreo muestra:
+- Lista de todas las aplicaciones/ambientes
+- Conteo de pods por aplicación
+- Estado de cada pod (listo/no listo)
+- Resumen general al final
+- Notificaciones en Slack cuando hay problemas
