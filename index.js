@@ -11,6 +11,7 @@ const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
 const SLACK_CONFIG = {
   notifyOnErrors: true,        // Notificar errores (autenticación, fatales)
   notifyOnUnreadyPods: true,   // Notificar cuando hay pods no listos (problemas)
+  notifyOnPodDeaths: true,     // Notificar cuando pods mueren o desaparecen
   notifySummaryHourly: true,   // Enviar resumen cada hora (incluso si todo está bien)
   notifySummaryAlways: false   // NO enviar cada minuto (solo alertas + resumen horario)
 };
@@ -27,6 +28,8 @@ class ArgoCDMonitor {
         'Content-Type': 'application/json'
       }
     });
+    // Almacenar estado anterior para detectar pods que mueren
+    this.previousPodStates = new Map(); // appName -> Set de pod UIDs
   }
 
   async authenticate() {
@@ -355,6 +358,12 @@ class ArgoCDMonitor {
       const result = await this.monitorApplication(app);
       if (result) {
         summary.push(result);
+        
+        // Enviar alerta si hay pods muertos
+        if (result.deadPods > 0 && SLACK_CONFIG.notifyOnPodDeaths) {
+          console.log(`💀 ALERTA: ${result.deadPods} pod(s) murieron en ${result.appName}`.red.bold);
+          await this.sendPodDeathAlert(result.appName, result.deadPodsList, result.total);
+        }
       }
       console.log('═'.repeat(80).gray);
     }
@@ -420,7 +429,7 @@ class ArgoCDMonitor {
     });
 
     // Determinar estado general
-    const hasIssues = totalNotReady > 0;
+    const hasIssues = totalNotReady > 0 || totalDeadPods > 0;
     const statusEmoji = hasIssues ? '⚠️' : '✅';
     const statusText = hasIssues ? 'Con Problemas' : 'Todo OK';
 
@@ -469,13 +478,19 @@ class ArgoCDMonitor {
           {
             type: 'mrkdwn',
             text: `*❌ Pods No Listos:*\n${totalNotReady}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*💀 Pods Muertos:*\n${totalDeadPods || 0}`
           }
         ]
       }
     ];
 
     // Si hay problemas, mostrar sección destacada
-    if (appsWithIssues.length > 0) {
+    const appsWithDeadPods = summary.filter(item => (item.deadPods || 0) > 0);
+    
+    if (appsWithIssues.length > 0 || appsWithDeadPods.length > 0) {
       blocks.push({
         type: 'divider'
       });
@@ -487,11 +502,26 @@ class ArgoCDMonitor {
         }
       });
       
-      // Agrupar aplicaciones con problemas, máximo 10 por bloque para evitar mensajes muy largos
-      const issuesText = appsWithIssues.map(app => {
-        const percentage = ((app.ready / app.total) * 100).toFixed(0);
-        return `⚠️ *${app.appName}*\n   • Listos: ${app.ready}/${app.total} (${percentage}%)\n   • No listos: ${app.notReady} pods`;
-      }).join('\n\n');
+      // Agrupar aplicaciones con problemas
+      let issuesText = '';
+      
+      // Pods muertos (prioridad alta)
+      if (appsWithDeadPods.length > 0) {
+        issuesText += appsWithDeadPods.map(app => {
+          return `💀 *${app.appName}*\n   • Pods muertos/desaparecidos: ${app.deadPods}\n   • Pods actuales: ${app.total}`;
+        }).join('\n\n');
+        if (appsWithIssues.length > 0) {
+          issuesText += '\n\n';
+        }
+      }
+      
+      // Pods no listos
+      if (appsWithIssues.length > 0) {
+        issuesText += appsWithIssues.map(app => {
+          const percentage = ((app.ready / app.total) * 100).toFixed(0);
+          return `⚠️ *${app.appName}*\n   • Listos: ${app.ready}/${app.total} (${percentage}%)\n   • No listos: ${app.notReady} pods`;
+        }).join('\n\n');
+      }
 
       blocks.push({
         type: 'section',
@@ -558,6 +588,9 @@ class ArgoCDMonitor {
       if (item.notReady > 0) {
         console.log(`   ❌ Pods no listos: ${item.notReady}`.red);
       }
+      if (item.deadPods > 0) {
+        console.log(`   💀 Pods muertos/desaparecidos: ${item.deadPods}`.red.bold);
+      }
       console.log(`   Estado: ${item.appHealth}`.gray);
       console.log('');
     });
@@ -575,6 +608,9 @@ class ArgoCDMonitor {
     if (totalNotReady > 0) {
       console.log(`   ❌ Total pods no listos: ${totalNotReady}`.red);
     }
+    if (totalDeadPods > 0) {
+      console.log(`   💀 Total pods muertos: ${totalDeadPods}`.red.bold);
+    }
     console.log('═'.repeat(80).cyan + '\n');
 
     // Enviar notificación a Slack
@@ -583,9 +619,16 @@ class ArgoCDMonitor {
       const totalNotReady = summary.reduce((sum, item) => sum + item.notReady, 0);
       
       // Enviar notificación según configuración
+      const totalDeadPods = summary.reduce((sum, item) => sum + (item.deadPods || 0), 0);
+      
       if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
         // ALERTA INMEDIATA: Hay pods no listos (problema detectado)
         console.log('🚨 ALERTA: Enviando notificación a Slack por pods no listos...'.yellow.bold);
+        await this.sendSlackNotification(null, slackBlocks);
+      } else if (totalDeadPods > 0 && SLACK_CONFIG.notifyOnPodDeaths) {
+        // ALERTA INMEDIATA: Hay pods que murieron (ya se enviaron alertas individuales)
+        // Esta es una alerta adicional con resumen si hay múltiples apps afectadas
+        console.log('💀 ALERTA: Pods muertos detectados en múltiples aplicaciones'.red.bold);
         await this.sendSlackNotification(null, slackBlocks);
       } else if (SLACK_CONFIG.notifySummaryAlways) {
         // Opción de enviar cada minuto (generalmente deshabilitado)
@@ -714,14 +757,121 @@ class ArgoCDMonitor {
       console.log('');
     });
 
+    // Detectar pods que murieron o desaparecieron
+    const deadPods = this.detectDeadPods(appName, pods);
+
     return {
       appName,
       namespace,
       total: pods.length,
       ready: readyPods,
       notReady: notReadyPods,
-      appHealth: app.status?.health?.status || 'Unknown'
+      appHealth: app.status?.health?.status || 'Unknown',
+      deadPods: deadPods.length,
+      deadPodsList: deadPods
     };
+  }
+
+  detectDeadPods(appName, currentPods) {
+    if (!SLACK_CONFIG.notifyOnPodDeaths) {
+      return [];
+    }
+
+    const currentPodUids = new Set(
+      currentPods
+        .filter(p => p.uid)
+        .map(p => p.uid)
+    );
+
+    // Obtener estado anterior
+    const previousUids = this.previousPodStates.get(appName) || new Set();
+
+    // Detectar pods que desaparecieron (estaban antes pero ya no están)
+    const deadPodsUids = [...previousUids].filter(uid => !currentPodUids.has(uid));
+
+    // Actualizar estado anterior con el actual
+    this.previousPodStates.set(appName, currentPodUids);
+
+    // Si es la primera vez que monitoreamos esta app, no hay pods muertos
+    if (previousUids.size === 0) {
+      return [];
+    }
+
+    return deadPodsUids;
+  }
+
+  async sendPodDeathAlert(appName, deadPods, currentPodsCount) {
+    if (deadPods.length === 0 || !SLACK_CONFIG.notifyOnPodDeaths) {
+      return;
+    }
+
+    const timestamp = new Date().toLocaleString('es-ES', {
+      timeZone: 'America/Santo_Domingo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const blocks = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `💀 ALERTA: Pods Muertos/Desaparecidos - ${appName}`
+        }
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `📅 ${timestamp}`
+          }
+        ]
+      },
+      {
+        type: 'divider'
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🚨 *${deadPods.length} pod(s) han muerto o desaparecido* en la aplicación *${appName}*`
+        }
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Aplicación:*\n${appName}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Pods actuales:*\n${currentPodsCount}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Pods muertos:*\n${deadPods.length}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Estado:*\n⚠️ Requiere atención`
+          }
+        ]
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `Los pods han desaparecido del sistema. Esto puede indicar:\n• Fallo crítico del pod\n• Reinicio forzado\n• Problemas de recursos\n• Eliminación manual`
+        }
+      }
+    ];
+
+    await this.sendSlackNotification(null, blocks);
   }
 }
 
