@@ -2,9 +2,18 @@ import axios from 'axios';
 import colors from 'colors';
 import cron from 'node-cron';
 
-const ARGOCD_URL = 'https://argocd.alproyect.store';
-const USERNAME = 'admin';
-const PASSWORD = 'QTSK97LQXPeIekdt';
+const ARGOCD_URL = process.env.ARGOCD_URL || 'https://argocd.alproyect.store';
+const USERNAME = process.env.ARGOCD_USERNAME || 'admin';
+const PASSWORD = process.env.ARGOCD_PASSWORD || 'QTSK97LQXPeIekdt';
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
+
+// Configuración de notificaciones Slack
+const SLACK_CONFIG = {
+  notifyOnErrors: true,        // Notificar errores
+  notifyOnUnreadyPods: true,   // Notificar cuando hay pods no listos
+  notifySummaryHourly: true,   // Enviar resumen cada hora (incluso si todo está bien)
+  notifySummaryAlways: false   // Enviar resumen en cada ejecución (puede ser demasiado)
+};
 
 class ArgoCDMonitor {
   constructor(baseURL, username, password) {
@@ -44,6 +53,14 @@ class ArgoCDMonitor {
       return true;
     } catch (error) {
       console.error('❌ Error al autenticar:'.red, error.response?.data || error.message);
+      
+      // Enviar alerta a Slack sobre error de autenticación
+      this.sendSlackNotification(
+        `🚨 *Error de Autenticación ArgoCD*\n` +
+        `No se pudo autenticar con ArgoCD.\n` +
+        `Error: ${error.message || 'Desconocido'}`
+      );
+      
       return false;
     }
   }
@@ -335,6 +352,120 @@ class ArgoCDMonitor {
     this.showSummary(summary);
   }
 
+  async sendSlackNotification(message, blocks = null) {
+    if (!SLACK_WEBHOOK_URL) {
+      // Si no hay webhook configurado, no hacer nada
+      return;
+    }
+
+    try {
+      const payload = blocks ? { blocks } : { text: message };
+      
+      await axios.post(SLACK_WEBHOOK_URL, payload, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (error) {
+      console.error('❌ Error al enviar notificación a Slack:'.red, error.message);
+      // No lanzar error, solo loguear para que no interrumpa el monitoreo
+    }
+  }
+
+  formatSlackSummary(summary) {
+    if (!summary || summary.length === 0) {
+      return null;
+    }
+
+    // Ordenar por nombre de aplicación
+    summary.sort((a, b) => a.appName.localeCompare(b.appName));
+
+    // Totales generales
+    const totalPods = summary.reduce((sum, item) => sum + item.total, 0);
+    const totalReady = summary.reduce((sum, item) => sum + item.ready, 0);
+    const totalNotReady = summary.reduce((sum, item) => sum + item.notReady, 0);
+
+    const timestamp = new Date().toLocaleString('es-ES', {
+      timeZone: 'America/Santo_Domingo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    // Determinar color y estado general
+    const hasIssues = totalNotReady > 0;
+    const color = hasIssues ? '#ff0000' : '#36a64f'; // Rojo si hay problemas, verde si todo bien
+    const statusEmoji = hasIssues ? '⚠️' : '✅';
+
+    const blocks = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `${statusEmoji} Monitoreo ArgoCD - ${timestamp}`
+        }
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Total Aplicaciones:*\n${summary.length}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Total Pods:*\n${totalPods}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*✅ Pods Listos:*\n${totalReady}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*❌ Pods No Listos:*\n${totalNotReady}`
+          }
+        ]
+      }
+    ];
+
+    // Agregar aplicaciones con problemas
+    const appsWithIssues = summary.filter(item => item.notReady > 0);
+    if (appsWithIssues.length > 0) {
+      blocks.push({
+        type: 'divider'
+      });
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*⚠️ Aplicaciones con Pods No Listos:*\n${appsWithIssues.map(app => `• *${app.appName}*: ${app.notReady}/${app.total} pods no listos`).join('\n')}`
+        }
+      });
+    }
+
+    // Agregar todas las aplicaciones en un formato compacto
+    blocks.push({
+      type: 'divider'
+    });
+    
+    const appsText = summary.map(item => {
+      const icon = item.notReady > 0 ? '⚠️' : '✅';
+      return `${icon} *${item.appName}*: ${item.ready}/${item.total} listos${item.notReady > 0 ? ` (${item.notReady} no listos)` : ''}`;
+    }).join('\n');
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Detalle por Aplicación:*\n${appsText}`
+      }
+    });
+
+    return blocks;
+  }
+
   showSummary(summary) {
     console.log('\n' + '═'.repeat(80).cyan);
     console.log('📊 RESUMEN GENERAL - CONteo de PODS por AMBIENTE'.brightCyan.bold);
@@ -377,6 +508,21 @@ class ArgoCDMonitor {
       console.log(`   ❌ Total pods no listos: ${totalNotReady}`.red);
     }
     console.log('═'.repeat(80).cyan + '\n');
+
+    // Enviar notificación a Slack
+    const slackBlocks = this.formatSlackSummary(summary);
+    if (slackBlocks) {
+      const totalNotReady = summary.reduce((sum, item) => sum + item.notReady, 0);
+      
+      // Enviar notificación según configuración
+      if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
+        // Enviar alerta inmediata si hay pods no listos
+        this.sendSlackNotification(null, slackBlocks);
+      } else if (totalNotReady === 0 && SLACK_CONFIG.notifySummaryAlways) {
+        // Opcional: enviar resumen incluso cuando todo está bien
+        this.sendSlackNotification(null, slackBlocks);
+      }
+    }
   }
 
   async monitorApplication(app) {
@@ -528,6 +674,15 @@ async function runMonitoring() {
     console.log(`\n✅ Monitoreo completado a las ${timestamp}\n`.gray);
   } catch (error) {
     console.error('❌ Error fatal:'.red, error);
+    
+    // Enviar alerta a Slack sobre error fatal
+    const monitor = new ArgoCDMonitor(ARGOCD_URL, USERNAME, PASSWORD);
+    await monitor.sendSlackNotification(
+      `🚨 *Error Fatal en Monitoreo ArgoCD*\n` +
+      `Error: ${error.message || 'Desconocido'}\n` +
+      `Stack: ${error.stack ? error.stack.substring(0, 500) : 'N/A'}`
+    );
+    
     throw error;
   }
 }
@@ -555,6 +710,35 @@ if (runOnce) {
   cron.schedule('* * * * *', () => {
     runMonitoring();
   });
+
+  // Programar resumen cada hora (si está configurado)
+  if (SLACK_CONFIG.notifySummaryHourly) {
+    cron.schedule('0 * * * *', async () => {
+      try {
+        console.log('📧 Enviando resumen horario a Slack...'.cyan);
+        const monitor = new ArgoCDMonitor(ARGOCD_URL, USERNAME, PASSWORD);
+        const authenticated = await monitor.authenticate();
+        if (authenticated) {
+          const applications = await monitor.getApplications();
+          const summary = [];
+          for (const app of applications) {
+            const result = await monitor.monitorApplication(app);
+            if (result) {
+              summary.push(result);
+            }
+          }
+          const slackBlocks = monitor.formatSlackSummary(summary);
+          if (slackBlocks) {
+            await monitor.sendSlackNotification(null, slackBlocks);
+            console.log('✅ Resumen horario enviado a Slack\n'.green);
+          }
+        }
+      } catch (error) {
+        console.error('❌ Error al enviar resumen horario:'.red, error.message);
+      }
+    });
+    console.log('📧 Resumen horario a Slack activado\n'.cyan);
+  }
   
   console.log('✅ Monitoreo programado. Presiona Ctrl+C para detener.\n'.green);
   
