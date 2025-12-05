@@ -945,6 +945,123 @@ class ArgoCDMonitor {
 
     await this.sendSlackNotification(null, blocks);
   }
+
+  async sendArgoCDStatusAlert(result) {
+    if (!result.hasProblems) {
+      return;
+    }
+
+    const issues = [];
+    if (result.isDegraded && SLACK_CONFIG.notifyOnAppDegraded) {
+      issues.push('Degraded');
+    }
+    if (result.isOutOfSync && SLACK_CONFIG.notifyOnAppOutOfSync) {
+      issues.push('OutOfSync');
+    }
+    if (result.isMissing && SLACK_CONFIG.notifyOnAppMissing) {
+      issues.push('Missing');
+    }
+    if (result.isSuspended && SLACK_CONFIG.notifyOnAppSuspended) {
+      issues.push('Suspended');
+    }
+
+    if (issues.length === 0) {
+      return;
+    }
+
+    const timestamp = new Date().toLocaleString('es-ES', {
+      timeZone: 'America/Santo_Domingo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const statusEmoji = result.isDegraded ? '🔴' : result.isOutOfSync ? '🟡' : result.isMissing ? '⚠️' : '⏸️';
+    const statusText = issues.join(', ');
+
+    const blocks = [
+      {
+        type: 'header',
+        text: {
+          type: 'plain_text',
+          text: `${statusEmoji} Alerta de Estado ArgoCD - ${result.appName}`
+        }
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `📅 ${timestamp}`
+          }
+        ]
+      },
+      {
+        type: 'divider'
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `⚠️ *La aplicación ${result.appName} tiene problemas de estado en ArgoCD*`
+        }
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Aplicación:*\n${result.appName}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Namespace:*\n${result.namespace}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Health Status:*\n${result.appHealth === 'Degraded' ? '🔴 Degraded' : result.appHealth === 'Missing' ? '⚠️ Missing' : result.appHealth === 'Suspended' ? '⏸️ Suspended' : result.appHealth}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Sync Status:*\n${result.syncStatus === 'OutOfSync' ? '🟡 OutOfSync' : result.syncStatus || 'Unknown'}`
+          }
+        ]
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Problemas detectados:*\n${issues.map(issue => `• ${issue}`).join('\n')}`
+        }
+      },
+      {
+        type: 'section',
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Pods totales:*\n${result.total}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Pods listos:*\n${result.ready}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Pods no listos:*\n${result.notReady || 0}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Pods muertos:*\n${result.deadPods || 0}`
+          }
+        ]
+      }
+    ];
+
+    console.log(`🚨 ALERTA: Estado problemático detectado en ${result.appName}: ${statusText}`.yellow.bold);
+    await this.sendSlackNotification(null, blocks);
+  }
 }
 
 // Función para ejecutar el monitoreo
