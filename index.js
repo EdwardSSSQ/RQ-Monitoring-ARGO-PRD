@@ -365,20 +365,30 @@ class ArgoCDMonitor {
 
   async sendSlackNotification(message, blocks = null) {
     if (!SLACK_WEBHOOK_URL) {
-      // Si no hay webhook configurado, no hacer nada
+      console.warn('⚠️  SLACK_WEBHOOK_URL no está configurado. Las notificaciones no se enviarán.'.yellow);
       return;
     }
 
     try {
       const payload = blocks ? { blocks } : { text: message };
       
-      await axios.post(SLACK_WEBHOOK_URL, payload, {
+      const response = await axios.post(SLACK_WEBHOOK_URL, payload, {
         headers: {
           'Content-Type': 'application/json'
         }
       });
+      
+      if (response.status === 200) {
+        console.log('✅ Notificación enviada a Slack exitosamente'.green);
+      }
     } catch (error) {
-      console.error('❌ Error al enviar notificación a Slack:'.red, error.message);
+      console.error('❌ Error al enviar notificación a Slack:'.red);
+      if (error.response) {
+        console.error(`   Status: ${error.response.status}`.red);
+        console.error(`   Data:`, error.response.data);
+      } else {
+        console.error(`   Mensaje: ${error.message}`.red);
+      }
       // No lanzar error, solo loguear para que no interrumpa el monitoreo
     }
   }
