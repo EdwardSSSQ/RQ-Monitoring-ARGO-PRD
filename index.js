@@ -678,6 +678,7 @@ class ArgoCDMonitor {
       
       // Enviar notificación según configuración
       const totalDeadPods = summary.reduce((sum, item) => sum + (item.deadPods || 0), 0);
+      const appsWithCriticalProblems = summary.filter(item => item.hasCriticalProblems);
       
       if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
         // ALERTA INMEDIATA: Hay pods no listos (problema detectado)
@@ -687,6 +688,11 @@ class ArgoCDMonitor {
         // ALERTA INMEDIATA: Hay pods que murieron (ya se enviaron alertas individuales)
         // Esta es una alerta adicional con resumen si hay múltiples apps afectadas
         console.log('💀 ALERTA: Pods muertos detectados en múltiples aplicaciones'.red.bold);
+        await this.sendSlackNotification(null, slackBlocks);
+      } else if (appsWithCriticalProblems.length > 0) {
+        // ALERTA INMEDIATA: Hay problemas críticos de estado en ArgoCD (ya se enviaron alertas individuales)
+        // OutOfSync NO genera alerta inmediata, solo en resumen horario
+        console.log('🔴 ALERTA: Problemas críticos de estado ArgoCD detectados en múltiples aplicaciones'.yellow.bold);
         await this.sendSlackNotification(null, slackBlocks);
       } else if (SLACK_CONFIG.notifySummaryAlways) {
         // Opción de enviar cada minuto (generalmente deshabilitado)
