@@ -9,10 +9,10 @@ const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
 
 // Configuración de notificaciones Slack
 const SLACK_CONFIG = {
-  notifyOnErrors: true,        // Notificar errores
-  notifyOnUnreadyPods: true,   // Notificar cuando hay pods no listos
-  notifySummaryHourly: false,  // Enviar resumen cada hora (deshabilitado)
-  notifySummaryAlways: true    // Enviar resumen en cada ejecución (cada minuto)
+  notifyOnErrors: true,        // Notificar errores (autenticación, fatales)
+  notifyOnUnreadyPods: true,   // Notificar cuando hay pods no listos (problemas)
+  notifySummaryHourly: true,   // Enviar resumen cada hora (incluso si todo está bien)
+  notifySummaryAlways: false   // NO enviar cada minuto (solo alertas + resumen horario)
 };
 
 class ArgoCDMonitor {
@@ -583,15 +583,17 @@ class ArgoCDMonitor {
       const totalNotReady = summary.reduce((sum, item) => sum + item.notReady, 0);
       
       // Enviar notificación según configuración
-      if (SLACK_CONFIG.notifySummaryAlways) {
-        // Enviar resumen en cada ejecución (cada minuto)
-        console.log('📤 Enviando notificación a Slack...'.cyan);
+      if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
+        // ALERTA INMEDIATA: Hay pods no listos (problema detectado)
+        console.log('🚨 ALERTA: Enviando notificación a Slack por pods no listos...'.yellow.bold);
         await this.sendSlackNotification(null, slackBlocks);
-      } else if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
-        // Enviar alerta inmediata si hay pods no listos
-        console.log('📤 Enviando alerta a Slack por pods no listos...'.yellow);
+      } else if (SLACK_CONFIG.notifySummaryAlways) {
+        // Opción de enviar cada minuto (generalmente deshabilitado)
+        console.log('📤 Enviando resumen a Slack...'.cyan);
         await this.sendSlackNotification(null, slackBlocks);
       }
+      // Si todo está bien y notifySummaryAlways=false, no se envía nada aquí
+      // El resumen horario se maneja en el cron job separado
     } else {
       console.warn('⚠️  No se pudo generar el formato de notificación para Slack'.yellow);
     }
@@ -787,13 +789,20 @@ if (runOnce) {
   if (SLACK_CONFIG.notifySummaryHourly) {
     cron.schedule('0 * * * *', async () => {
       try {
-        console.log('📧 Enviando resumen horario a Slack...'.cyan);
+        console.log('\n📧 Generando resumen horario para Slack...'.cyan);
         const monitor = new ArgoCDMonitor(ARGOCD_URL, USERNAME, PASSWORD);
         const authenticated = await monitor.authenticate();
         if (authenticated) {
+          // Filtrar aplicaciones excluidas
+          const excludedApps = ['video-api-r36-prd'];
           const applications = await monitor.getApplications();
+          const filteredApplications = applications.filter(app => {
+            const appName = app.metadata?.name;
+            return appName && !excludedApps.includes(appName);
+          });
+
           const summary = [];
-          for (const app of applications) {
+          for (const app of filteredApplications) {
             const result = await monitor.monitorApplication(app);
             if (result) {
               summary.push(result);
@@ -807,9 +816,14 @@ if (runOnce) {
         }
       } catch (error) {
         console.error('❌ Error al enviar resumen horario:'.red, error.message);
+        // Enviar alerta sobre el error
+        const monitor = new ArgoCDMonitor(ARGOCD_URL, USERNAME, PASSWORD);
+        await monitor.sendSlackNotification(
+          `🚨 *Error al generar resumen horario*\nError: ${error.message}`
+        );
       }
     });
-    console.log('📧 Resumen horario a Slack activado\n'.cyan);
+    console.log('📧 Resumen horario a Slack activado (cada hora)\n'.cyan);
   }
   
   console.log('✅ Monitoreo programado. Presiona Ctrl+C para detener.\n'.green);
