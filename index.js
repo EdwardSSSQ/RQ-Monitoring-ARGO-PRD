@@ -599,6 +599,7 @@ class ArgoCDMonitor {
     const totalPods = summary.reduce((sum, item) => sum + item.total, 0);
     const totalReady = summary.reduce((sum, item) => sum + item.ready, 0);
     const totalNotReady = summary.reduce((sum, item) => sum + item.notReady, 0);
+    const totalDeadPods = summary.reduce((sum, item) => sum + (item.deadPods || 0), 0);
 
     console.log('═'.repeat(80).cyan);
     console.log('📈 TOTALES GENERALES:'.brightCyan.bold);
