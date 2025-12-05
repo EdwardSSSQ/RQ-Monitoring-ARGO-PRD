@@ -643,8 +643,11 @@ class ArgoCDMonitor {
                         item.appHealth === 'Missing' ? '⚠️' : 
                         item.appHealth === 'Suspended' ? '⏸️' : '❓';
       
-      console.log(`   ${healthIcon} Health: ${item.appHealth}`[healthColor]);
-      console.log(`   Sync: ${item.syncStatus === 'OutOfSync' ? '🟡 OutOfSync' : '✅ ' + item.syncStatus}`.gray);
+      console.log(`   ${healthIcon} Health: ${item.appHealth || 'Unknown'}`[healthColor]);
+      const syncDisplay = item.syncStatus && item.syncStatus !== 'Unknown' 
+        ? (item.syncStatus === 'OutOfSync' ? '🟡 OutOfSync' : '✅ ' + item.syncStatus)
+        : '❓ Unknown';
+      console.log(`   Sync: ${syncDisplay}`.gray);
       console.log('');
     });
 
