@@ -12,6 +12,10 @@ const SLACK_CONFIG = {
   notifyOnErrors: true,        // Notificar errores (autenticación, fatales)
   notifyOnUnreadyPods: true,   // Notificar cuando hay pods no listos (problemas)
   notifyOnPodDeaths: true,     // Notificar cuando pods mueren o desaparecen
+  notifyOnAppDegraded: true,   // Notificar cuando aplicación está Degraded
+  notifyOnAppOutOfSync: true,  // Notificar cuando aplicación está OutOfSync
+  notifyOnAppMissing: true,    // Notificar cuando aplicación está Missing
+  notifyOnAppSuspended: true,  // Notificar cuando aplicación está Suspended
   notifySummaryHourly: true,   // Enviar resumen cada hora (incluso si todo está bien)
   notifySummaryAlways: false   // NO enviar cada minuto (solo alertas + resumen horario)
 };
@@ -359,10 +363,15 @@ class ArgoCDMonitor {
       if (result) {
         summary.push(result);
         
-        // Enviar alerta si hay pods muertos
+        // Enviar alertas por problemas detectados
         if (result.deadPods > 0 && SLACK_CONFIG.notifyOnPodDeaths) {
           console.log(`💀 ALERTA: ${result.deadPods} pod(s) murieron en ${result.appName}`.red.bold);
           await this.sendPodDeathAlert(result.appName, result.deadPodsList, result.total);
+        }
+        
+        // Alertas por estados de ArgoCD
+        if (result.hasProblems) {
+          await this.sendArgoCDStatusAlert(result);
         }
       }
       console.log('═'.repeat(80).gray);
@@ -429,8 +438,15 @@ class ArgoCDMonitor {
       minute: '2-digit'
     });
 
+    // Verificar problemas de estado ArgoCD
+    const appsWithArgoCDProblems = summary.filter(item => item.hasProblems);
+    const totalDegraded = summary.filter(item => item.isDegraded).length;
+    const totalOutOfSync = summary.filter(item => item.isOutOfSync).length;
+    const totalMissing = summary.filter(item => item.isMissing).length;
+    const totalSuspended = summary.filter(item => item.isSuspended).length;
+
     // Determinar estado general
-    const hasIssues = totalNotReady > 0 || totalDeadPods > 0;
+    const hasIssues = totalNotReady > 0 || totalDeadPods > 0 || appsWithArgoCDProblems.length > 0;
     const statusEmoji = hasIssues ? '⚠️' : '✅';
     const statusText = hasIssues ? 'Con Problemas' : 'Todo OK';
 
@@ -483,6 +499,14 @@ class ArgoCDMonitor {
           {
             type: 'mrkdwn',
             text: `*💀 Pods Muertos:*\n${totalDeadPods || 0}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*🔴 Apps Degraded:*\n${totalDegraded || 0}`
+          },
+          {
+            type: 'mrkdwn',
+            text: `*🟡 Apps OutOfSync:*\n${totalOutOfSync || 0}`
           }
         ]
       }
@@ -491,7 +515,7 @@ class ArgoCDMonitor {
     // Si hay problemas, mostrar sección destacada
     const appsWithDeadPods = summary.filter(item => (item.deadPods || 0) > 0);
     
-    if (appsWithIssues.length > 0 || appsWithDeadPods.length > 0) {
+    if (appsWithIssues.length > 0 || appsWithDeadPods.length > 0 || appsWithArgoCDProblems.length > 0) {
       blocks.push({
         type: 'divider'
       });
@@ -521,6 +545,21 @@ class ArgoCDMonitor {
         issuesText += appsWithIssues.map(app => {
           const percentage = ((app.ready / app.total) * 100).toFixed(0);
           return `⚠️ *${app.appName}*\n   • Listos: ${app.ready}/${app.total} (${percentage}%)\n   • No listos: ${app.notReady} pods`;
+        }).join('\n\n');
+        if (appsWithArgoCDProblems.length > 0 || appsWithDeadPods.length > 0) {
+          issuesText += '\n\n';
+        }
+      }
+
+      // Problemas de estado ArgoCD
+      if (appsWithArgoCDProblems.length > 0) {
+        issuesText += appsWithArgoCDProblems.map(app => {
+          const problems = [];
+          if (app.isDegraded) problems.push('🔴 Degraded');
+          if (app.isOutOfSync) problems.push('🟡 OutOfSync');
+          if (app.isMissing) problems.push('⚠️ Missing');
+          if (app.isSuspended) problems.push('⏸️ Suspended');
+          return `🚨 *${app.appName}*\n   • Health: ${app.appHealth}\n   • Sync: ${app.syncStatus}\n   • Problemas: ${problems.join(', ')}`;
         }).join('\n\n');
       }
 
@@ -592,7 +631,20 @@ class ArgoCDMonitor {
       if (item.deadPods > 0) {
         console.log(`   💀 Pods muertos/desaparecidos: ${item.deadPods}`.red.bold);
       }
-      console.log(`   Estado: ${item.appHealth}`.gray);
+      // Mostrar estado de salud con colores
+      let healthColor = 'gray';
+      if (item.appHealth === 'Degraded') healthColor = 'red';
+      else if (item.appHealth === 'Healthy') healthColor = 'green';
+      else if (item.appHealth === 'Missing') healthColor = 'yellow';
+      else if (item.appHealth === 'Suspended') healthColor = 'magenta';
+      
+      const healthIcon = item.appHealth === 'Degraded' ? '🔴' : 
+                        item.appHealth === 'Healthy' ? '✅' : 
+                        item.appHealth === 'Missing' ? '⚠️' : 
+                        item.appHealth === 'Suspended' ? '⏸️' : '❓';
+      
+      console.log(`   ${healthIcon} Health: ${item.appHealth}`[healthColor]);
+      console.log(`   Sync: ${item.syncStatus === 'OutOfSync' ? '🟡 OutOfSync' : '✅ ' + item.syncStatus}`.gray);
       console.log('');
     });
 
