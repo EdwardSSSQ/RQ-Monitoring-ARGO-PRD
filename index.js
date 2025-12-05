@@ -534,7 +534,7 @@ class ArgoCDMonitor {
     return blocks;
   }
 
-  showSummary(summary) {
+  async showSummary(summary) {
     console.log('\n' + '═'.repeat(80).cyan);
     console.log('📊 RESUMEN GENERAL - CONteo de PODS por AMBIENTE'.brightCyan.bold);
     console.log('═'.repeat(80).cyan + '\n');
@@ -585,11 +585,15 @@ class ArgoCDMonitor {
       // Enviar notificación según configuración
       if (SLACK_CONFIG.notifySummaryAlways) {
         // Enviar resumen en cada ejecución (cada minuto)
-        this.sendSlackNotification(null, slackBlocks);
+        console.log('📤 Enviando notificación a Slack...'.cyan);
+        await this.sendSlackNotification(null, slackBlocks);
       } else if (totalNotReady > 0 && SLACK_CONFIG.notifyOnUnreadyPods) {
         // Enviar alerta inmediata si hay pods no listos
-        this.sendSlackNotification(null, slackBlocks);
+        console.log('📤 Enviando alerta a Slack por pods no listos...'.yellow);
+        await this.sendSlackNotification(null, slackBlocks);
       }
+    } else {
+      console.warn('⚠️  No se pudo generar el formato de notificación para Slack'.yellow);
     }
   }
 
