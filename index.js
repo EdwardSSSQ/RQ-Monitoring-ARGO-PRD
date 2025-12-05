@@ -817,13 +817,28 @@ class ArgoCDMonitor {
     // Detectar pods que murieron o desaparecieron
     const deadPods = this.detectDeadPods(appName, pods);
 
+    // Obtener estados de ArgoCD
+    const appHealth = app.status?.health?.status || 'Unknown';
+    const syncStatus = app.status?.sync?.status || 'Unknown';
+    const isDegraded = appHealth === 'Degraded';
+    const isOutOfSync = syncStatus === 'OutOfSync';
+    const isMissing = appHealth === 'Missing';
+    const isSuspended = app.status?.operationState?.phase === 'Suspended' || appHealth === 'Suspended';
+    const hasProblems = isDegraded || isOutOfSync || isMissing || isSuspended;
+
     return {
       appName,
       namespace,
       total: pods.length,
       ready: readyPods,
       notReady: notReadyPods,
-      appHealth: app.status?.health?.status || 'Unknown',
+      appHealth,
+      syncStatus,
+      isDegraded,
+      isOutOfSync,
+      isMissing,
+      isSuspended,
+      hasProblems,
       deadPods: deadPods.length,
       deadPodsList: deadPods
     };
